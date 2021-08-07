@@ -3,6 +3,14 @@ import os
 import time
 import datetime
 
+import rdkit
+from rdkit import DataStructs
+from rdkit import Chem
+from rdkit.Chem import QED
+from rdkit.Chem import Crippen
+from rdkit.Chem import AllChem
+from rdkit.Chem import Draw
+
 import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
@@ -62,6 +70,7 @@ class Solver(object):
         self.sample_dir = config.sample_dir
         self.model_save_dir = config.model_save_dir
         self.result_dir = config.result_dir
+        self.img_dir_path = config.img_dir_path
 
         # Step size.
         self.log_step = config.log_step
@@ -84,7 +93,7 @@ class Solver(object):
         self.D = Discriminator(self.d_conv_dim, self.m_dim, self.b_dim, self.dropout)
         self.V = Discriminator(self.d_conv_dim, self.m_dim, self.b_dim, self.dropout)
 
-        self.g_optimizer = torch.optim.Adam(list(self.G.parameters())+list(self.V.parameters()),
+        self.g_optimizer = torch.optim.Adam(list(self.G.parameters()) + list(self.V.parameters()),
                                             self.g_lr, [self.beta1, self.beta2])
         self.d_optimizer = torch.optim.Adam(self.D.parameters(), self.d_lr, [self.beta1, self.beta2])
         self.print_network(self.G, 'G')
@@ -146,13 +155,13 @@ class Solver(object):
                                    only_inputs=True)[0]
 
         dydx = dydx.view(dydx.size(0), -1)
-        dydx_l2norm = torch.sqrt(torch.sum(dydx**2, dim=1))
-        return torch.mean((dydx_l2norm-1)**2)
+        dydx_l2norm = torch.sqrt(torch.sum(dydx ** 2, dim=1))
+        return torch.mean((dydx_l2norm - 1) ** 2)
 
     def label2onehot(self, labels, dim):
         """Convert label indices to one-hot vectors."""
-        out = torch.zeros(list(labels.size())+[dim]).to(self.device)
-        out.scatter_(len(out.size())-1,labels.unsqueeze(-1),1.)
+        out = torch.zeros(list(labels.size()) + [dim]).to(self.device)
+        out.scatter_(len(out.size()) - 1, labels.unsqueeze(-1), 1.)
         return out
 
     def classification_loss(self, logit, target, dataset='CelebA'):
@@ -174,12 +183,12 @@ class Solver(object):
             return x if len(x) > 1 else x[0]
 
         if method == 'soft_gumbel':
-            softmax = [F.gumbel_softmax(e_logits.contiguous().view(-1,e_logits.size(-1))
-                       / temperature, hard=False).view(e_logits.size())
+            softmax = [F.gumbel_softmax(e_logits.contiguous().view(-1, e_logits.size(-1))
+                                        / temperature, hard=False).view(e_logits.size())
                        for e_logits in listify(inputs)]
         elif method == 'hard_gumbel':
-            softmax = [F.gumbel_softmax(e_logits.contiguous().view(-1,e_logits.size(-1))
-                       / temperature, hard=True).view(e_logits.size())
+            softmax = [F.gumbel_softmax(e_logits.contiguous().view(-1, e_logits.size(-1))
+                                        / temperature, hard=True).view(e_logits.size())
                        for e_logits in listify(inputs)]
         else:
             softmax = [F.softmax(e_logits / temperature, -1)
@@ -230,7 +239,7 @@ class Solver(object):
         print('Start training...')
         start_time = time.time()
         for i in range(start_iters, self.num_iters):
-            if (i+1) % self.log_step == 0:
+            if (i + 1) % self.log_step == 0:
                 mols, _, _, a, x, _, _, _, _ = self.data.next_validation_batch()
                 z = self.sample_z(a.shape[0])
                 print('[Valid]', '')
@@ -242,8 +251,8 @@ class Solver(object):
             #                             1. Preprocess input data                                #
             # =================================================================================== #
 
-            a = torch.from_numpy(a).to(self.device).long()            # Adjacency.
-            x = torch.from_numpy(x).to(self.device).long()            # Nodes.
+            a = torch.from_numpy(a).to(self.device).long()  # Adjacency.
+            x = torch.from_numpy(x).to(self.device).long()  # Nodes.
             a_tensor = self.label2onehot(a, self.b_dim)
             x_tensor = self.label2onehot(x, self.m_dim)
             z = torch.from_numpy(z).to(self.device).float()
@@ -264,12 +273,11 @@ class Solver(object):
             d_loss_fake = torch.mean(logits_fake)
 
             # Compute loss for gradient penalty.
-            eps = torch.rand(logits_real.size(0),1,1,1).to(self.device)
+            eps = torch.rand(logits_real.size(0), 1, 1, 1).to(self.device)
             x_int0 = (eps * a_tensor + (1. - eps) * edges_hat).requires_grad_(True)
             x_int1 = (eps.squeeze(-1) * x_tensor + (1. - eps.squeeze(-1)) * nodes_hat).requires_grad_(True)
             grad0, grad1 = self.D(x_int0, None, x_int1)
             d_loss_gp = self.gradient_penalty(grad0, x_int0) + self.gradient_penalty(grad1, x_int1)
-
 
             # Backward and optimize.
             d_loss = d_loss_fake + d_loss_real + self.lambda_gp * d_loss_gp
@@ -287,7 +295,7 @@ class Solver(object):
             #                               3. Train the generator                                #
             # =================================================================================== #
 
-            if (i+1) % self.n_critic == 0:
+            if (i + 1) % self.n_critic == 0:
                 # Z-to-target
                 edges_logits, nodes_logits = self.G(z)
                 # Postprocess with Gumbel softmax
@@ -305,12 +313,12 @@ class Solver(object):
                 rewardF = torch.from_numpy(self.reward(mols)).to(self.device)
 
                 # Value loss
-                value_logit_real,_ = self.V(a_tensor, None, x_tensor, torch.sigmoid)
-                value_logit_fake,_ = self.V(edges_hat, None, nodes_hat, torch.sigmoid)
+                value_logit_real, _ = self.V(a_tensor, None, x_tensor, torch.sigmoid)
+                value_logit_fake, _ = self.V(edges_hat, None, nodes_hat, torch.sigmoid)
                 g_loss_value = torch.mean((value_logit_real - rewardR) ** 2 + (
-                                           value_logit_fake - rewardF) ** 2)
-                #rl_loss= -value_logit_fake
-                #f_loss = (torch.mean(features_real, 0) - torch.mean(features_fake, 0)) ** 2
+                        value_logit_fake - rewardF) ** 2)
+                # rl_loss= -value_logit_fake
+                # f_loss = (torch.mean(features_real, 0) - torch.mean(features_fake, 0)) ** 2
 
                 # Backward and optimize.
                 g_loss = g_loss_fake + g_loss_value
@@ -327,13 +335,13 @@ class Solver(object):
             # =================================================================================== #
 
             # Print out training information.
-            if (i+1) % self.log_step == 0:
+            if (i + 1) % self.log_step == 0:
                 et = time.time() - start_time
                 et = str(datetime.timedelta(seconds=et))[:-7]
-                log = "Elapsed [{}], Iteration [{}/{}]".format(et, i+1, self.num_iters)
+                log = "Elapsed [{}], Iteration [{}/{}]".format(et, i + 1, self.num_iters)
 
                 # Log update
-                m0, m1 = all_scores(mols, self.data, norm=True)     # 'mols' is output of Fake Reward
+                m0, m1 = all_scores(mols, self.data, norm=True)  # 'mols' is output of Fake Reward
                 m0 = {k: np.array(v)[np.nonzero(v)].mean() for k, v in m0.items()}
                 m0.update(m1)
                 loss.update(m0)
@@ -343,33 +351,32 @@ class Solver(object):
 
                 if self.use_tensorboard:
                     for tag, value in loss.items():
-                        self.logger.scalar_summary(tag, value, i+1)
+                        self.logger.scalar_summary(tag, value, i + 1)
 
             # Save model checkpoints.
-            if (i+1) % self.model_save_step == 0:
-                G_path = os.path.join(self.model_save_dir, '{}-G.ckpt'.format(i+1))
-                D_path = os.path.join(self.model_save_dir, '{}-D.ckpt'.format(i+1))
-                V_path = os.path.join(self.model_save_dir, '{}-V.ckpt'.format(i+1))
+            if (i + 1) % self.model_save_step == 0:
+                G_path = os.path.join(self.model_save_dir, '{}-G.ckpt'.format(i + 1))
+                D_path = os.path.join(self.model_save_dir, '{}-D.ckpt'.format(i + 1))
+                V_path = os.path.join(self.model_save_dir, '{}-V.ckpt'.format(i + 1))
                 torch.save(self.G.state_dict(), G_path)
                 torch.save(self.D.state_dict(), D_path)
                 torch.save(self.V.state_dict(), V_path)
                 print('Saved model checkpoints into {}...'.format(self.model_save_dir))
 
             # Decay learning rates.
-            if (i+1) % self.lr_update_step == 0 and (i+1) > (self.num_iters - self.num_iters_decay):
+            if (i + 1) % self.lr_update_step == 0 and (i + 1) > (self.num_iters - self.num_iters_decay):
                 g_lr -= (self.g_lr / float(self.num_iters_decay))
                 d_lr -= (self.d_lr / float(self.num_iters_decay))
                 self.update_lr(g_lr, d_lr)
-                print ('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(g_lr, d_lr))
-
+                print('Decayed learning rates, g_lr: {}, d_lr: {}.'.format(g_lr, d_lr))
 
     def test(self):
         # Load the trained generator.
         self.restore_model(self.test_iters)
-
+        log = ""
         with torch.no_grad():
             mols, _, _, a, x, _, _, _, _ = self.data.next_test_batch()
-            z = self.sample_z(a.shape[0])
+            z = torch.from_numpy(self.sample_z(a.shape[0])).float().to(self.device)
 
             # Z-to-target
             edges_logits, nodes_logits = self.G(z)
@@ -384,9 +391,13 @@ class Solver(object):
             mols = [self.data.matrices2mol(n_.data.cpu().numpy(), e_.data.cpu().numpy(), strict=True)
                     for e_, n_ in zip(edges_hard, nodes_hard)]
 
+            mol_f_name = os.path.join(self.img_dir_path, 'mol.png')
+            save_mol_img(mols, mol_f_name, is_test=True)
+
             # Log update
-            m0, m1 = all_scores(mols, self.data, norm=True)     # 'mols' is output of Fake Reward
+            m0, m1 = all_scores(mols, self.data, norm=True)  # 'mols' is output of Fake Reward
             m0 = {k: np.array(v)[np.nonzero(v)].mean() for k, v in m0.items()}
             m0.update(m1)
             for tag, value in m0.items():
-                log += ", {}: {:.4f}".format(tag, value)
+                log = ", {}: {:.4f}".format(tag, value)
+                print(log)

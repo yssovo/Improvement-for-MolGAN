@@ -3,6 +3,7 @@ from sklearn.metrics import confusion_matrix
 
 import pickle
 import gzip
+import rdkit
 from rdkit import DataStructs
 from rdkit import Chem
 from rdkit.Chem import QED
@@ -12,6 +13,10 @@ from rdkit.Chem import Draw
 
 import math
 import numpy as np
+
+import string
+import random
+import datetime
 
 NP_model = pickle.load(gzip.open('data/NP_score.pkl.gz'))
 SA_model = {i[j]: float(i[0]) for i in pickle.load(gzip.open('data/SA_score.pkl.gz')) for j in range(1, len(i))}
@@ -245,6 +250,7 @@ class MolecularMetrics(object):
                                      np.exp(- (x - x_high) ** 2 / decay)],
                          default=np.ones_like(x))
 
+
 def mols2grid_image(mols, molsPerRow):
     mols = [e if e is not None else Chem.RWMol() for e in mols]
 
@@ -328,3 +334,45 @@ def all_scores(mols, data, norm=False, reconstruction=False):
           'novel score': MolecularMetrics.novel_total_score(mols, data) * 100}
 
     return m0, m1
+
+
+def get_date_postfix():
+    """Get a date based postfix for directory name.
+    Returns
+    -------
+    post_fix : str
+    """
+    dt = datetime.datetime.now()
+    post_fix = '{}_{:02d}-{:02d}-{:02d}'.format(
+        dt.date(), dt.hour, dt.minute, dt.second)
+
+    return post_fix
+
+
+def random_string(string_len=3):
+    letters = string.ascii_lowercase
+    return ''.join(random.choice(letters) for i in range(string_len))
+
+
+def save_mol_img(mols, f_name='tmp.png', is_test=False):
+    orig_f_name = f_name
+    for a_mol in mols:
+        try:
+            if Chem.MolToSmiles(a_mol) is not None:
+                print('Generating molecule')
+                if is_test:
+                    f_name = orig_f_name
+                    f_split = f_name.split('.')
+                    f_split[-1] = random_string() + '.' + f_split[-1]
+                    f_name = ''.join(f_split)
+
+                rdkit.Chem.Draw.MolToFile(a_mol, f_name)
+                a_smi = Chem.MolToSmiles(a_mol)
+                mol_graph = read_smiles(a_smi)
+
+                break
+
+                # if not is_test:
+                #     break
+        except:
+            continue

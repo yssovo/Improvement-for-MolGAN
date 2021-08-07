@@ -203,7 +203,6 @@ class SparseMolecularDataset():
                 Chem.SanitizeMol(mol)
             except:
                 mol = None
-
         return mol
 
     def seq2mol(self, seq, strict=False):
@@ -288,10 +287,13 @@ class SparseMolecularDataset():
 
 
 if __name__ == '__main__':
-    data = SparseMolecularDataset()
-    data.generate('gdb9.sdf', filters=lambda x: x.GetNumAtoms() <= 9)
-    data.save('gdb9_9nodes.sparsedataset')
-
+    # GDB9 dataset
     # data = SparseMolecularDataset()
-    # data.generate('data/qm9_5k.smi', validation=0.00021, test=0.00021)  # , filters=lambda x: x.GetNumAtoms() <= 9)
-    # data.save('data/qm9_5k.sparsedataset')
+    # data.generate('gdb9.sdf', filters=lambda x: x.GetNumAtoms() <= 9)
+    # data.save('gdb9_9nodes.sparsedataset')
+
+    # QM9 dataset
+    data = SparseMolecularDataset()
+    # data.generate('qm9_5k.smi', validation=0.00021, test=0.00021, filters=lambda x: x.GetNumAtoms() <= 9)
+    data.generate('qm9_5k.smi', filters=lambda x: x.GetNumAtoms() <= 9)
+    data.save('qm9_5k.sparsedataset')

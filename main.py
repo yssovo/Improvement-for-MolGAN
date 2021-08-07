@@ -21,6 +21,8 @@ def main(config):
         os.makedirs(config.sample_dir)
     if not os.path.exists(config.result_dir):
         os.makedirs(config.result_dir)
+    if not os.path.exists(config.img_dir_path):
+        os.makedirs(config.img_dir_path)
 
     # Solver for training and testing StarGAN.
     solver = Solver(config)
@@ -66,11 +68,12 @@ if __name__ == '__main__':
     parser.add_argument('--use_tensorboard', type=str2bool, default=False)
 
     # Directories.
-    parser.add_argument('--mol_data_dir', type=str, default='data/gdb9_9nodes.sparsedataset')
+    parser.add_argument('--mol_data_dir', type=str, default='data/qm9_5k.sparsedataset')
     parser.add_argument('--log_dir', type=str, default='molgan/logs')
     parser.add_argument('--model_save_dir', type=str, default='molgan/models')
     parser.add_argument('--sample_dir', type=str, default='molgan/samples')
     parser.add_argument('--result_dir', type=str, default='molgan/results')
+    parser.add_argument('--img_dir_path', type=str, default='molgan/imgs')
 
     # Step size.
     parser.add_argument('--log_step', type=int, default=10)
