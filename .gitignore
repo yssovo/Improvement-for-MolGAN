@@ -1,0 +1,11 @@
+MOLGAN.sh
+
+data/gdb9.*
+data/*_score.*
+data/qm9_5k.sparsedataset
+molgan_*.out
+
+__pycache__/*
+data/__pycache__/*
+
+molgan/*
