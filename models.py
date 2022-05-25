@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from layers import GraphConvolution, GraphAggregation
+from layers import GraphGIN, GraphAggregation
 
 
 class ResidualBlock(nn.Module):
@@ -60,7 +60,7 @@ class Discriminator(nn.Module):
 
         graph_conv_dim, aux_dim, linear_dim = conv_dim
         # discriminator
-        self.gcn_layer = GraphConvolution(m_dim, graph_conv_dim, b_dim, dropout)
+        self.gcn_layer = GraphGIN(m_dim, graph_conv_dim, dropout)
         self.agg_layer = GraphAggregation(graph_conv_dim[-1], aux_dim, b_dim, dropout)
 
         # multi dense layer
