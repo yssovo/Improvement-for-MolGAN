@@ -104,7 +104,7 @@ class MLP(nn.Module):
 
 
 class GraphGIN(nn.Module):
-    def __init__(self, input_dim, out_feature_list, final_dropout, num_layers = 5, num_mlp_layers = 2):
+    def __init__(self, input_dim, out_feature_list, final_dropout, num_layers = 7, num_mlp_layers = 2):
         '''
             input_dim: dimensionality of input features
             output_dim: number of classes for prediction
@@ -158,7 +158,6 @@ class GraphGIN(nn.Module):
         return h
 
     def forward(self, input, adj, activation=None):
-
         h = input
 
         for layer in range(self.num_layers-1):
