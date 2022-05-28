@@ -104,7 +104,7 @@ class MLP(nn.Module):
 
 
 class GraphGIN(nn.Module):
-    def __init__(self, input_dim, out_feature_list, final_dropout, num_layers = 7, num_mlp_layers = 2):
+    def __init__(self, input_dim, out_feature_list, final_dropout, num_layers = 3, num_mlp_layers = 2):
         '''
             input_dim: dimensionality of input features
             output_dim: number of classes for prediction
@@ -132,8 +132,11 @@ class GraphGIN(nn.Module):
             self.mlps.append(MLP(num_mlp_layers, out_feature_list[0], out_feature_list[0], out_feature_list[0]))
             self.batch_norms.append(nn.BatchNorm1d(9))
 
-        #Linear function that maps the hidden representation at dofferemt layers into a prediction score
-        self.linear_m = nn.Linear(out_feature_list[0], out_feature_list[0])
+        #Linear function that maps the hidden representation at differemt layers into a prediction score
+        self.linear_m = torch.nn.ModuleList()
+
+        for layer in range(num_layers - 2):
+            self.linear_m.append(nn.Linear(out_feature_list[0], out_feature_list[0]))
         self.linear_f = nn.Linear(out_feature_list[0], out_feature_list[1])
 
     def next_layer_eps(self, h, layer, adj):
@@ -141,7 +144,7 @@ class GraphGIN(nn.Module):
         if (layer == 0):
             pooled = torch.stack([self.linear(h) for _ in range(adj.size(1))], 1)
         else:
-            pooled = torch.stack([h for _ in range(adj.size(1))], 1)
+            pooled = torch.stack([self.linear_m[layer-1](h) for _ in range(adj.size(1))], 1)
         
         pooled = torch.einsum('bijk,bikl->bijl', (adj, pooled))
 
@@ -149,7 +152,7 @@ class GraphGIN(nn.Module):
         if (layer == 0):
             pooled = torch.sum(pooled, 1) + (1 + self.eps[layer]) * self.linear(h)
         else:
-            pooled = torch.sum(pooled, 1) + (1 + self.eps[layer]) * h
+            pooled = torch.sum(pooled, 1) + (1 + self.eps[layer]) * self.linear_m[layer-1](h)
         pooled_rep = self.mlps[layer](pooled)
         h = self.batch_norms[layer](pooled_rep)
 
@@ -160,13 +163,16 @@ class GraphGIN(nn.Module):
     def forward(self, input, adj, activation=None):
         h = input
 
+        hidden_rep = []
+
         for layer in range(self.num_layers-1):
             h = self.next_layer_eps(h, layer, adj)
+            hidden_rep.append(h)
 
-        output = torch.stack([self.linear_f(h) for _ in range(adj.size(1))], 1)
-        output = torch.einsum('bijk,bikl->bijl', (adj, output))
-        output = torch.sum(output, 1) + (1 + self.eps[layer]) * self.linear_f(h)
-        output = activation(output) if activation is not None else output
-        output = self.final_dropout(output)
+        output = 0
+
+        for h in hidden_rep:
+            pooled_h = activation(h) if activation is not None else h
+            output += self.final_dropout(self.linear_f(pooled_h))
 
         return output
