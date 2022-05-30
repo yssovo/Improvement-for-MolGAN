@@ -3,7 +3,6 @@ import os
 import time
 import datetime
 
-import rdkit
 from rdkit import DataStructs
 from rdkit import Chem
 from rdkit.Chem import QED
@@ -19,6 +18,8 @@ from torchvision.utils import save_image
 from utils import *
 from models import Generator, Discriminator
 from data.sparse_molecular_dataset import SparseMolecularDataset
+
+from GAT_Gen import GraphFlowModel
 
 
 class Solver(object):
@@ -85,11 +86,12 @@ class Solver(object):
 
     def build_model(self):
         """Create a generator and a discriminator."""
-        self.G = Generator(self.g_conv_dim, self.z_dim,
-                           self.data.vertexes,
-                           self.data.bond_num_types,
-                           self.data.atom_num_types,
-                           self.dropout)
+        #self.G = Generator(self.g_conv_dim, self.z_dim, self.data.vertexes, self.data.bond_num_types, self.data.atom_num_types, self.dropout)
+        self.G = GraphFlowModel(edge_unroll=6, 
+                                batch_dim=self.batch_size,
+                                vertexes=self.data.vertexes, 
+                                edges=self.data.bond_num_types, nodes=self.data.atom_num_types,
+                                bond_decoder_m=self.data.bond_decoder_m, atom_decoder_m=self.data.atom_decoder_m)
         self.D = Discriminator(self.d_conv_dim, self.m_dim, self.b_dim, self.dropout)
         self.V = Discriminator(self.d_conv_dim, self.m_dim, self.b_dim, self.dropout)
 
@@ -266,7 +268,7 @@ class Solver(object):
             d_loss_real = - torch.mean(logits_real)
 
             # Compute loss with fake images.
-            edges_logits, nodes_logits = self.G(z)
+            edges_logits, nodes_logits = self.G()
             # Postprocess with Gumbel softmax
             (edges_hat, nodes_hat) = self.postprocess((edges_logits, nodes_logits), self.post_method)
             logits_fake, features_fake = self.D(edges_hat, None, nodes_hat)
@@ -297,7 +299,7 @@ class Solver(object):
 
             if (i + 1) % self.n_critic == 0:
                 # Z-to-target
-                edges_logits, nodes_logits = self.G(z)
+                edges_logits, nodes_logits = self.G() ## self.G(z)
                 # Postprocess with Gumbel softmax
                 (edges_hat, nodes_hat) = self.postprocess((edges_logits, nodes_logits), self.post_method)
                 logits_fake, features_fake = self.D(edges_hat, None, nodes_hat)

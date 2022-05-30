@@ -12,6 +12,9 @@ def main(config):
     # For fast training.
     cudnn.benchmark = True
 
+    os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
     # Create directories if not exist.
     if not os.path.exists(config.log_dir):
         os.makedirs(config.log_dir)

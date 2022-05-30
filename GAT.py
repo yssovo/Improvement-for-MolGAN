@@ -5,9 +5,224 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class RelationGraphConvolution(nn.Module):
+    """
+    Relation GCN layer. 
+    """
+
+    def __init__(self, in_features, out_features, edge_dim=4, aggregate='sum', dropout=0., use_relu=True, bias=False):
+        '''
+        :param in/out_features: scalar of channels for node embedding
+        :param edge_dim: dim of edge type, virtual type not included
+        '''
+        super(RelationGraphConvolution, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.edge_dim = edge_dim
+        self.dropout = dropout
+        self.aggregate = aggregate
+        if use_relu:
+            self.act = nn.ReLU()
+        else:
+            self.act = None
+
+        self.weight = nn.Parameter(torch.FloatTensor(
+            self.edge_dim, self.in_features, self.out_features))
+        if bias:
+            self.bias = nn.Parameter(torch.FloatTensor(
+                self.edge_dim, 1, self.out_features))
+        else:
+            self.register_parameter('bias', None)
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.xavier_uniform_(self.weight)
+        if self.bias is not None:
+            nn.init.constant_(self.bias, 0.)
+
+    def forward(self, x, adj):
+        '''
+        :param x: (batch, N, d)
+        :param adj: (batch, E, N, N)
+        typically d=9 e=3
+        :return:
+        updated x with shape (batch, N, d)
+        '''
+        x = F.dropout(x, p=self.dropout, training=self.training)  # (b, N, d)
+
+        batch_size = x.size(0)
+
+        # transform
+        support = torch.einsum('bid, edh-> beih', x, self.weight)
+        output = torch.einsum('beij, bejh-> beih', adj, support)  # (batch, e, N, d)
+
+        if self.bias is not None:
+            output += self.bias
+        if self.act is not None:
+            output = self.act(output)  # (b, E, N, d)
+        output = output.view(batch_size, self.edge_dim, x.size(
+            1), self.out_features)  # (b, E, N, d)
+
+        if self.aggregate == 'sum':
+            # sum pooling #(b, N, d)
+            node_embedding = torch.sum(output, dim=1, keepdim=False)
+        elif self.aggregate == 'max':
+            # max pooling  #(b, N, d)
+            node_embedding = torch.max(output, dim=1, keepdim=False)
+        elif self.aggregate == 'mean':
+            # mean pooling #(b, N, d)
+            node_embedding = torch.mean(output, dim=1, keepdim=False)
+        elif self.aggregate == 'concat':
+            #! implementation wrong
+            node_embedding = torch.cat(torch.split(
+                output, dim=1, split_size_or_sections=1), dim=3)  # (b, 1, n, d*e)
+            node_embedding = torch.squeeze(
+                node_embedding, dim=1)  # (b, n, d*e)
+        else:
+            print('GCN aggregate error!')
+        return node_embedding
+
+    def __repr__(self):
+        return self.__class__.__name__ + ' (' + str(self.in_features) + ' -> ' + str(self.out_features) + ')'
+
+class RGCN(nn.Module):
+    def __init__(self, nfeat, nhid=128, nout=128, edge_dim=4, num_layers=3, dropout=0., normalization=False):
+        '''
+        :num_layars: the number of layers in each R-GCN
+        '''
+        super(RGCN, self).__init__()
+
+        self.nfeat = nfeat
+        self.nhid = nhid
+        self.nout = nout
+        self.edge_dim = edge_dim
+        self.num_layers = num_layers
+
+        self.dropout = dropout
+        self.normalization = normalization
+
+        self.emb = nn.Linear(nfeat, nfeat, bias=False) 
+        #self.bn_emb = nn.BatchNorm2d(8)
+
+        self.gc1 = RelationGraphConvolution(
+            nfeat, nhid, edge_dim=self.edge_dim, aggregate='sum', use_relu=True, dropout=self.dropout, bias=False)
+        # if self.normalization:
+        #    self.bn1 = nn.BatchNorm2d(nhid)
+
+        self.gc2 = nn.ModuleList([RelationGraphConvolution(nhid, nhid, edge_dim=self.edge_dim, aggregate='sum',
+                                                           use_relu=True, dropout=self.dropout, bias=False)
+                                  for i in range(self.num_layers-2)])
+        # if self.normalization:
+        #    self.bn2 = nn.ModuleList([nn.BatchNorm2d(nhid) for i in range(self.num_layers-2)])
+
+        self.gc3 = RelationGraphConvolution(
+            nhid, nout, edge_dim=self.edge_dim, aggregate='sum', use_relu=False, dropout=self.dropout, bias=False)
+        # if self.normalization
+        #    self.bn3 = nn.BatchNorm2d(nout)
+
+    def forward(self, x, adj):
+        '''
+        :param x: (batch, N, d)
+        :param adj: (batch, E, N, N)
+        :return:
+        '''
+        # TODO: Add normalization for adacency matrix
+        # embedding layer
+        x = self.emb(x)
+        # if self.normalization:
+        #    x = self.bn_emb(x.transpose(0, 3, 1, 2))
+        #    x = x.transpose(0, 2, 3, 1)
+
+        # first GCN layer
+        x = self.gc1(x, adj)
+        # if self.normalization:
+        #    x = self.bn1(x.transpose(0, 3, 1, 2))
+        #    x = x.transpose(0, 2, 3, 1)
+
+        # hidden GCN layer(s)
+        for i in range(self.num_layers-2):
+            x = self.gc2[i](x, adj)  # (#node, #class)
+            # if self.normalization:
+            #    x = self.bn2[i](x.transpose(0, 3, 1, 2))
+            #    x = x.transpose(0, 2, 3, 1)
+
+        # last GCN layer
+        x = self.gc3(x, adj)  # (batch, N, d)
+        # check here: bn for last layer seem to be necessary
+        #x = self.bn3(x.transpose(0, 3, 1, 2))
+        #x = x.transpose(0, 2, 3, 1)
+
+        # return node embedding
+        return x
+
+class Rescale(nn.Module):
+    def __init__(self):
+        super(Rescale, self).__init__()
+        self.weight = nn.Parameter(torch.zeros([1]))
+
+    def forward(self, x):
+        if torch.isnan(torch.exp(self.weight)).any():
+            print(self.weight)
+            raise RuntimeError('Rescale factor has NaN entries')
+
+        x = torch.exp(self.weight) * x
+        return x
+
+class ST_Net_Sigmoid(nn.Module):
+    def __init__(self, input_dim, output_dim, hid_dim=64, num_layers=2, bias=True, scale_weight_norm=False, sigmoid_shift=2., apply_batch_norm=False):
+        super(ST_Net_Sigmoid, self).__init__()
+        self.num_layers = num_layers  # unused
+        self.input_dim = input_dim
+        self.hid_dim = hid_dim
+        self.output_dim = output_dim
+        self.bias = bias
+        self.apply_batch_norm = apply_batch_norm
+        self.scale_weight_norm = scale_weight_norm
+        self.sigmoid_shift = sigmoid_shift
+
+        self.linear1 = nn.Linear(input_dim, hid_dim, bias=bias)
+        self.linear2 = nn.Linear(hid_dim, output_dim*2, bias=bias)
+
+        if self.apply_batch_norm:
+            self.bn_before = nn.BatchNorm1d(input_dim)
+        if self.scale_weight_norm:
+            self.rescale1 = nn.utils.weight_norm(Rescale())
+            self.rescale2 = nn.utils.weight_norm(Rescale())
+
+        else:
+            self.rescale1 = Rescale()
+            self.rescale2 = Rescale()
+
+        self.tanh = nn.Tanh()
+        self.sigmoid = nn.Sigmoid()
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.xavier_uniform_(self.linear1.weight)
+        nn.init.constant_(self.linear2.weight, 1e-10)
+        if self.bias:
+            nn.init.constant_(self.linear1.bias, 0.)
+            nn.init.constant_(self.linear2.bias, 0.)
+
+
+    def forward(self, x):
+        '''
+        :param x: (batch * repeat_num for node/edge, emb)
+        :return: w and b for affine operation
+        '''
+        if self.apply_batch_norm:
+            x = self.bn_before(x)
+
+        x = self.linear2(self.tanh(self.linear1(x)))
+        x = self.rescale1(x)
+        s = x[:, :self.output_dim]
+        t = x[:, self.output_dim:]
+        s = self.sigmoid(s + self.sigmoid_shift)
+        s = self.rescale2(s) # linear scale seems important, similar to learnable prior..
+        return s, t
+
 class MaskedGraphAF(nn.Module):
-    def __init__(self, mask_node, mask_edge, index_select_edge, num_flow_layer, graph_size,
-                 num_node_type, num_edge_type, args, nhid=128, nout=128):
+    def __init__(self, mask_node, mask_edge, index_select_edge, num_flow_layer, graph_size, num_node_type, num_edge_type, nhid=128, nout=128):
         '''
         :param index_nod_edg:
         :param num_edge_type, virtual type included
@@ -17,8 +232,6 @@ class MaskedGraphAF(nn.Module):
         self.graph_size = graph_size
         self.num_node_type = num_node_type
         self.num_edge_type = num_edge_type
-        self.args = args
-        self.is_batchNorm = self.args.is_bn
 
         self.mask_node = nn.Parameter(mask_node.view(1, self.repeat_num, graph_size, 1), requires_grad=False)  # (1, repeat_num, n, 1)
         self.mask_edge = nn.Parameter(mask_edge.view(1, self.repeat_num, 1, graph_size, graph_size), requires_grad=False)  # (1, repeat_num, 1, n, n)
@@ -29,20 +242,14 @@ class MaskedGraphAF(nn.Module):
         self.hid_size = nhid
         self.num_flow_layer = num_flow_layer
 
-        self.rgcn = RGCN(num_node_type, nhid=self.hid_size, nout=self.emb_size, edge_dim=self.num_edge_type-1,
-                         num_layers=self.args.gcn_layer, dropout=0., normalization=False)
+        self.rgcn = RGCN(num_node_type, nhid=self.hid_size, nout=self.emb_size, edge_dim=self.num_edge_type-1)
 
-        if self.is_batchNorm:
-            self.batchNorm = nn.BatchNorm1d(nout)
+        self.batchNorm = nn.BatchNorm1d(nout)
 
-        self.node_st_net = nn.ModuleList([ST_Net_Sigmoid(self.args, nout, self.num_node_type, hid_dim=nhid, bias=True,
-                                                 scale_weight_norm=self.args.scale_weight_norm, sigmoid_shift=self.args.sigmoid_shift, 
-                                                 apply_batch_norm=self.args.is_bn_before) for i in range(num_flow_layer)])
+        self.node_st_net = nn.ModuleList([ST_Net_Sigmoid(nout, self.num_node_type, hid_dim=nhid) for i in range(num_flow_layer)])
 
-        self.edge_st_net = nn.ModuleList([ST_Net_Sigmoid(self.args, nout*3, self.num_edge_type, hid_dim=nhid, bias=True,
-                                                 scale_weight_norm=self.args.scale_weight_norm, sigmoid_shift=self.args.sigmoid_shift, 
-                                                 apply_batch_norm=self.args.is_bn_before) for i in range(num_flow_layer)])
-
+        self.edge_st_net = nn.ModuleList([ST_Net_Sigmoid(nout*3, self.num_edge_type, hid_dim=nhid) for i in range(num_flow_layer)])
+    
 
     def forward(self, x, adj, x_deq, adj_deq):
         '''
@@ -94,6 +301,84 @@ class MaskedGraphAF(nn.Module):
         adj_log_jacob = adj_log_jacob.view(batch_size, -1).sum(-1)  # (batch)
         return [x_deq, adj_deq], [x_log_jacob, adj_log_jacob]
 
+    def reverse(self, x, adj, latent, mode, edge_index=None):
+        '''
+        Args:
+            x: generated subgraph node features so far with shape (1, N, 9), some part of the x is masked
+            adj: generated subgraph adacency features so far with shape (1, 4, N, N) some part of the adj is masked
+            latent: sample latent vector with shape (1, 9) (mode == 0) or (1, 4) (mode == 1)
+            mode: generation mode. if mode == 0, generate a new node, if mode == 1, generate a new edge
+            edge_index [1, 2]
+
+        Returns:
+            out: generated node/edge features with shape (1, 9) (mode == 0) or (1, 4) , (mode == 1)
+        '''
+
+        assert mode == 0 or edge_index is not None, 'if you want to generate edge, you must specify edge_index'
+        assert x.size(0) == 1
+        assert adj.size(0) == 1
+        assert edge_index is None or (edge_index.size(0) == 1 and edge_index.size(1) == 2)
+        
+        if mode == 0: #(1, 9)
+            st_net = self.node_st_net
+            #emb = graph_emb
+            emb = self._get_embs_node(x, adj)
+
+        else:  # mode == 1
+            st_net = self.edge_st_net
+            emb = self._get_embs_edge(x, adj, edge_index)            
+
+        for i in reversed(range(self.num_flow_layer)):
+            s, t = st_net[i](emb)
+            latent = (latent - t) / s 
+
+        return latent
+
+    def _get_embs_node(self, x, adj):
+        """
+        Args:
+            x: current node feature matrix with shape (batch, N, 9)
+            adj: current adjacency feature matrix with shape (batch, 5, N, N)
+        Returns:
+            graph embedding for updating node features with shape (batch, d)
+        """
+
+        batch_size = x.size(0)
+        adj = adj[:, :4] # (batch, 4, N, N)
+
+        node_emb = self.rgcn(x, adj) # (batch, N, d)
+        node_emb = self.batchNorm(node_emb.transpose(1, 2)).transpose(1, 2) # (batch, N, d)
+        
+        graph_emb = torch.sum(node_emb, dim=1, keepdim=False).contiguous() # (batch, d)
+        return graph_emb
+
+    def _get_embs_edge(self, x, adj, index):
+        """
+        Args:
+            x: current node feature matrix with shape (batch, N, 9)
+            adj: current adjacency feature matrix with shape (batch, 5, N, N)
+            index: link prediction index with shape (batch, 2)
+        Returns:
+            Embedding(concatenate graph embedding, edge start node embedding and edge end node embedding) 
+                for updating edge features with shape (batch, 3d)
+        """
+
+        batch_size = x.size(0)
+        assert batch_size == index.size(0)
+
+        adj = adj[:, :4] # (batch, 4, N, N)
+
+        node_emb = self.rgcn(x, adj) # (batch, N, d)
+        node_emb = self.batchNorm(node_emb.transpose(1, 2)).transpose(1, 2) # (batch, N, d)
+
+        graph_emb = torch.sum(node_emb, dim = 1, keepdim=False).contiguous().view(batch_size, 1, -1) # (batch, 1, d)
+
+        index = index.view(batch_size, -1, 1).repeat(1, 1, self.emb_size) # (batch, 2, d)
+        graph_node_emb = torch.cat((torch.gather(node_emb, dim=1, index=index), 
+                                        graph_emb),dim=1)  # (batch_size, 3, d)
+        graph_node_emb = graph_node_emb.view(batch_size, -1) # (batch_size, 3d)
+        return graph_node_emb
+
     def _get_embs(self, x, adj):
         '''
         :param x of shape (batch, N, 9)
@@ -116,8 +401,7 @@ class MaskedGraphAF(nn.Module):
 
         node_emb = self.rgcn(x, adj)  # (batch*repeat_num, N, d)
 
-        if self.is_batchNorm:
-            node_emb = self.batchNorm(node_emb.transpose(1, 2)).transpose(1, 2)  # (batch*repeat_num, N, d)
+        node_emb = self.batchNorm(node_emb.transpose(1, 2)).transpose(1, 2)  # (batch*repeat_num, N, d)
 
         node_emb = node_emb.view(batch_size, self.repeat_num, self.graph_size, -1) # (batch, repeat_num, N, d)
 
