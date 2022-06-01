@@ -315,8 +315,8 @@ class MaskedGraphAF(nn.Module):
         '''
 
         assert mode == 0 or edge_index is not None, 'if you want to generate edge, you must specify edge_index'
-        assert x.size(0) == 1
-        assert adj.size(0) == 1
+        ##assert x.size(0) == 1
+        ##assert adj.size(0) == 1
         assert edge_index is None or (edge_index.size(0) == 1 and edge_index.size(1) == 2)
         
         if mode == 0: #(1, 9)

@@ -58,15 +58,13 @@ class GraphFlowModel(nn.Module):
     Returns:
 
     """
-    def __init__(self, edge_unroll, batch_dim, vertexes, edges, nodes, bond_decoder_m, atom_decoder_m):
+    def __init__(self, edge_unroll, vertexes, edges, nodes, bond_decoder_m, atom_decoder_m):
         super(GraphFlowModel, self).__init__()
         self.max_size = vertexes
         self.node_dim = nodes
         self.bond_dim = edges
         self.b_dim = edges
         self.edge_unroll = edge_unroll
-
-        self.batch_size = batch_dim
 
         self.atom_decoder_m = atom_decoder_m
         self.bond_decoder_m = bond_decoder_m
@@ -100,7 +98,7 @@ class GraphFlowModel(nn.Module):
         if self.dp:
             self.flow_core = nn.DataParallel(self.flow_core)
 
-    def forward(self, temperature=0.75, mute=False):
+    def forward(self, batch_size, temperature=0.75, mute=True):
         #TODO: add dropout/normalize
 
         self.eval()
@@ -118,15 +116,16 @@ class GraphFlowModel(nn.Module):
                                         temperature * torch.ones([self.bond_dim]).cuda())
 
             ## Each: (B, V, N), (B, E, V, V)
-            cur_node_features = torch.zeros([self.batch_size, self.max_size, self.node_dim]).cuda()
-            cur_adj_features = torch.zeros([self.batch_size, self.bond_dim, self.max_size, self.max_size]).cuda()
+            cur_node_features = torch.zeros([batch_size, self.max_size, self.node_dim]).cuda()
+            cur_adj_features = torch.zeros([batch_size, self.bond_dim, self.max_size, self.max_size]).cuda()
 
             #mol_size = mol.GetNumAtoms()
 
-            is_continue = [True] * self.batch_size
-            total_resample = [0] * self.batch_size
-            each_node_resample = np.zeros([self.batch_size,self.max_size])
-            for b in range(self.batch_size):
+            is_continue = [True] * batch_size
+            total_resample = [0] * batch_size
+            each_node_resample = np.zeros([batch_size,self.max_size])
+            
+            for b in range(batch_size):
                 rw_mol = Chem.RWMol() # editable mol
                 mol = None
                 for i in range(self.max_size):
@@ -211,8 +210,6 @@ class GraphFlowModel(nn.Module):
         ## (B, E, V, V) to (B, V, V, E)
 
         cur_adj_features = cur_adj_features.permute(0,2,3,1)
-
-        print(cur_adj_features.size(), cur_node_features.size())
 
         return cur_adj_features, cur_node_features
 

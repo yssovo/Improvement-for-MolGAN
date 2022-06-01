@@ -87,8 +87,7 @@ class Solver(object):
     def build_model(self):
         """Create a generator and a discriminator."""
         #self.G = Generator(self.g_conv_dim, self.z_dim, self.data.vertexes, self.data.bond_num_types, self.data.atom_num_types, self.dropout)
-        self.G = GraphFlowModel(edge_unroll=6, 
-                                batch_dim=self.batch_size,
+        self.G = GraphFlowModel(edge_unroll=6,
                                 vertexes=self.data.vertexes, 
                                 edges=self.data.bond_num_types, nodes=self.data.atom_num_types,
                                 bond_decoder_m=self.data.bond_decoder_m, atom_decoder_m=self.data.atom_decoder_m)
@@ -243,11 +242,11 @@ class Solver(object):
         for i in range(start_iters, self.num_iters):
             if (i + 1) % self.log_step == 0:
                 mols, _, _, a, x, _, _, _, _ = self.data.next_validation_batch()
-                z = self.sample_z(a.shape[0])
+                size = a.shape[0]
                 print('[Valid]', '')
             else:
                 mols, _, _, a, x, _, _, _, _ = self.data.next_train_batch(self.batch_size)
-                z = self.sample_z(self.batch_size)
+                size = self.batch_size
 
             # =================================================================================== #
             #                             1. Preprocess input data                                #
@@ -257,7 +256,6 @@ class Solver(object):
             x = torch.from_numpy(x).to(self.device).long()  # Nodes.
             a_tensor = self.label2onehot(a, self.b_dim)
             x_tensor = self.label2onehot(x, self.m_dim)
-            z = torch.from_numpy(z).to(self.device).float()
 
             # =================================================================================== #
             #                             2. Train the discriminator                              #
@@ -268,16 +266,16 @@ class Solver(object):
             d_loss_real = - torch.mean(logits_real)
 
             # Compute loss with fake images.
-            edges_logits, nodes_logits = self.G()
+            edges_logits, nodes_logits = self.G(size)
             # Postprocess with Gumbel softmax
-            (edges_hat, nodes_hat) = self.postprocess((edges_logits, nodes_logits), self.post_method)
-            logits_fake, features_fake = self.D(edges_hat, None, nodes_hat)
+            #(edges_hat, nodes_hat) = self.postprocess((edges_logits, nodes_logits), self.post_method)
+            logits_fake, features_fake = self.D(edges_logits, None, nodes_logits)
             d_loss_fake = torch.mean(logits_fake)
 
             # Compute loss for gradient penalty.
             eps = torch.rand(logits_real.size(0), 1, 1, 1).to(self.device)
-            x_int0 = (eps * a_tensor + (1. - eps) * edges_hat).requires_grad_(True)
-            x_int1 = (eps.squeeze(-1) * x_tensor + (1. - eps.squeeze(-1)) * nodes_hat).requires_grad_(True)
+            x_int0 = (eps * a_tensor + (1. - eps) * edges_logits).requires_grad_(True)
+            x_int1 = (eps.squeeze(-1) * x_tensor + (1. - eps.squeeze(-1)) * nodes_logits).requires_grad_(True)
             grad0, grad1 = self.D(x_int0, None, x_int1)
             d_loss_gp = self.gradient_penalty(grad0, x_int0) + self.gradient_penalty(grad1, x_int1)
 
@@ -299,10 +297,10 @@ class Solver(object):
 
             if (i + 1) % self.n_critic == 0:
                 # Z-to-target
-                edges_logits, nodes_logits = self.G() ## self.G(z)
+                edges_logits, nodes_logits = self.G(size) ## self.G(z)
                 # Postprocess with Gumbel softmax
-                (edges_hat, nodes_hat) = self.postprocess((edges_logits, nodes_logits), self.post_method)
-                logits_fake, features_fake = self.D(edges_hat, None, nodes_hat)
+                #(edges_hat, nodes_hat) = self.postprocess((edges_logits, nodes_logits), self.post_method)
+                logits_fake, features_fake = self.D(edges_logits, None, nodes_logits)
                 g_loss_fake = - torch.mean(logits_fake)
 
                 # Real Reward
@@ -316,7 +314,7 @@ class Solver(object):
 
                 # Value loss
                 value_logit_real, _ = self.V(a_tensor, None, x_tensor, torch.sigmoid)
-                value_logit_fake, _ = self.V(edges_hat, None, nodes_hat, torch.sigmoid)
+                value_logit_fake, _ = self.V(edges_logits, None, nodes_logits, torch.sigmoid)
                 g_loss_value = torch.mean((value_logit_real - rewardR) ** 2 + (
                         value_logit_fake - rewardF) ** 2)
                 # rl_loss= -value_logit_fake
@@ -378,20 +376,20 @@ class Solver(object):
         log = ""
         with torch.no_grad():
             mols, _, _, a, x, _, _, _, _ = self.data.next_test_batch()
-            z = torch.from_numpy(self.sample_z(a.shape[0])).float().to(self.device)
+            size = a.shape[0]
 
             # Z-to-target
-            edges_logits, nodes_logits = self.G(z)
+            edges_logits, nodes_logits = self.G(size)
             # Postprocess with Gumbel softmax
-            (edges_hat, nodes_hat) = self.postprocess((edges_logits, nodes_logits), self.post_method)
-            logits_fake, features_fake = self.D(edges_hat, None, nodes_hat)
+            #(edges_hat, nodes_hat) = self.postprocess((edges_logits, nodes_logits), self.post_method)
+            logits_fake, features_fake = self.D(edges_logits, None, nodes_logits)
             g_loss_fake = - torch.mean(logits_fake)
 
             # Fake Reward
-            (edges_hard, nodes_hard) = self.postprocess((edges_logits, nodes_logits), 'hard_gumbel')
-            edges_hard, nodes_hard = torch.max(edges_hard, -1)[1], torch.max(nodes_hard, -1)[1]
+            #(edges_hard, nodes_hard) = self.postprocess((edges_logits, nodes_logits), 'hard_gumbel')
+            #edges_hard, nodes_hard = torch.max(edges_hard, -1)[1], torch.max(nodes_hard, -1)[1]
             mols = [self.data.matrices2mol(n_.data.cpu().numpy(), e_.data.cpu().numpy(), strict=True)
-                    for e_, n_ in zip(edges_hard, nodes_hard)]
+                    for e_, n_ in zip(edges_logits, nodes_logits)]
 
             mol_f_name = os.path.join(self.img_dir_path, 'mol.png')
             save_mol_img(mols, mol_f_name, is_test=True)
